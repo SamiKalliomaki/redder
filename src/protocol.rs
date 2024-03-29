@@ -3,6 +3,12 @@ use std::io;
 use bytes::{Buf, BytesMut};
 use monoio::io::{AsyncReadRent, AsyncWriteRent, AsyncWriteRentExt};
 
+#[derive(Debug)]
+pub(crate) enum RedisValue {
+    String(String),
+    Array(i64),
+}
+
 pub(crate) trait RedisRead {
     async fn read_value(&mut self) -> io::Result<RedisValue>;
 }
@@ -53,19 +59,13 @@ impl<T: RedisRead> RedisReadExt for T {
     }
 }
 
-#[derive(Debug)]
-pub(crate) enum RedisValue {
-    String(String),
-    Array(i64),
-}
-
-pub(crate) struct RedisBufStream<T> {
-    stream: T,
+pub(crate) struct RedisBufStream<Stream> {
+    stream: Stream,
     buffer: BytesMut,
 }
 
-impl<T> RedisBufStream<T> {
-    pub fn new(stream: T) -> Self {
+impl<Stream> RedisBufStream<Stream> {
+    pub fn new(stream: Stream) -> Self {
         Self {
             stream,
             buffer: BytesMut::new(),
@@ -73,26 +73,7 @@ impl<T> RedisBufStream<T> {
     }
 }
 
-impl<Read: AsyncReadRent> RedisRead for RedisBufStream<Read> {
-    async fn read_value(&mut self) -> io::Result<RedisValue> {
-        Ok(match self.read_u8().await? {
-            // Simple string
-            b'+' => RedisValue::String(self.read_line().await?),
-            // Bulk string
-            b'$' => RedisValue::String(self.parse_bulk_string().await?),
-            // Array
-            b'*' => RedisValue::Array(self.parse_int().await?),
-            c => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Unknown / invalid value type: {}", c),
-                ))
-            }
-        })
-    }
-}
-
-impl<Read: AsyncReadRent> RedisBufStream<Read> {
+impl<Stream: AsyncReadRent> RedisBufStream<Stream> {
     async fn fill_buf(&mut self) -> io::Result<usize> {
         if self.buffer.capacity() < 1024 {
             self.buffer.reserve(1024 * 1024);
@@ -188,14 +169,31 @@ impl<Read: AsyncReadRent> RedisBufStream<Read> {
     }
 }
 
+impl<Stream: AsyncReadRent> RedisRead for RedisBufStream<Stream> {
+    async fn read_value(&mut self) -> io::Result<RedisValue> {
+        Ok(match self.read_u8().await? {
+            // Simple string
+            b'+' => RedisValue::String(self.read_line().await?),
+            // Bulk string
+            b'$' => RedisValue::String(self.parse_bulk_string().await?),
+            // Array
+            b'*' => RedisValue::Array(self.parse_int().await?),
+            c => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Unknown / invalid value type: {}", c),
+                ))
+            }
+        })
+    }
+}
+
 pub(crate) trait RedisWrite {
     async fn write_simple_string(self: &mut Self, s: String) -> io::Result<()>;
     async fn write_bulk_string(self: &mut Self, s: String) -> io::Result<()>;
 }
 
-impl<T> RedisWrite for RedisBufStream<T>
-where
-    T: AsyncWriteRent,
+impl<Stream: AsyncWriteRent> RedisWrite for RedisBufStream<Stream>
 {
     async fn write_simple_string(self: &mut Self, s: String) -> io::Result<()> {
         let s = s.into_bytes();
