@@ -1,66 +1,55 @@
-use std::{future::Future, io, pin::Pin};
+use std::io;
 
 use bytes::{Buf, BytesMut};
 use monoio::io::{AsyncReadRent, AsyncWriteRent, AsyncWriteRentExt};
 
-type BoxedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
-type RedisStreamItem<'a> = BoxedFuture<'a, Option<io::Result<RedisValue<'a>>>>;
-
-pub(crate) trait RedisValueRead {
+pub(crate) trait RedisRead {
     async fn read_value(&mut self) -> io::Result<RedisValue>;
+}
 
-    async fn read_array<'a>(&'a mut self) -> io::Result<Box<dyn RedisValueStream + 'a>>
-    where
-        Self: Sized,
+pub(crate) trait RedisReadExt {
+    async fn read_array(&mut self) -> io::Result<usize>;
+    async fn read_string(&mut self) -> io::Result<String>;
+}
+
+impl<T: RedisRead> RedisReadExt for T {
+    async fn read_array(&mut self) -> io::Result<usize>
     {
         let value = self.read_value().await?;
         match value {
-            RedisValue::Array(stream) => Ok(stream),
+            RedisValue::Array(length) => Ok(length),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Expected array type",
+                format!("Expected array, got: {:?}", value),
             )),
         }
     }
-}
 
-pub(crate) trait RedisValueStream {
-    fn read_value_dyn(&mut self) -> RedisStreamItem;
-    fn consume_rest<'a>(&'a mut self) -> BoxedFuture<'a, io::Result<()>>;
-}
-
-pub(crate) trait RedisValueStreamExt {
-    async fn read_string_dyn(&mut self) -> io::Result<String>;
-}
-
-impl<T: RedisValueStream + ?Sized> RedisValueStreamExt for T {
-    async fn read_string_dyn(&mut self) -> io::Result<String> {
-        match self.read_value_dyn().await {
-            Some(Ok(RedisValue::String(s))) => Ok(s),
-            Some(Ok(_)) => Err(io::Error::new(
+    async fn read_string(&mut self) -> io::Result<String>
+    {
+        let value = self.read_value().await?;
+        match value {
+            RedisValue::String(s) => Ok(s),
+            _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Expected string value",
-            )),
-            Some(Err(e)) => Err(e),
-            None => Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "Unexpected end of stream",
+                format!("Expected string, got: {:?}", value),
             )),
         }
     }
 }
 
-pub(crate) enum RedisValue<'a> {
+#[derive(Debug)]
+pub(crate) enum RedisValue {
     String(String),
-    Array(Box<dyn RedisValueStream + 'a>),
+    Array(usize),
 }
 
-struct RedisArrayStream<'a, T: RedisValueRead> {
+struct RedisArrayStream<'a, T: RedisRead> {
     stream: &'a mut T,
     len: usize,
 }
 
-impl<'a, T: RedisValueRead> RedisValueRead for RedisArrayStream<'a, T> {
+impl<'a, T: RedisRead> RedisRead for RedisArrayStream<'a, T> {
     async fn read_value(&mut self) -> io::Result<RedisValue> {
         if self.len == 0 {
             return Err(io::Error::new(
@@ -71,30 +60,6 @@ impl<'a, T: RedisValueRead> RedisValueRead for RedisArrayStream<'a, T> {
 
         self.len -= 1;
         self.stream.read_value().await
-    }
-}
-
-impl<'a, T: RedisValueRead> RedisValueStream for RedisArrayStream<'a, T> {
-    fn read_value_dyn<'b>(&'b mut self) -> RedisStreamItem<'b> {
-        Box::pin(async {
-            if self.len == 0 {
-                return None;
-            }
-
-            self.len -= 1;
-            Some(self.stream.read_value().await)
-        })
-    }
-
-    fn consume_rest<'b>(&'b mut self) -> BoxedFuture<'b, io::Result<()>> {
-        Box::pin(async move {
-            while self.len > 0 {
-                self.len -= 1;
-                self.stream.read_value().await?;
-            }
-
-            Ok(())
-        })
     }
 }
 
@@ -112,7 +77,7 @@ impl<T> RedisBufStream<T> {
     }
 }
 
-impl<Read: AsyncReadRent> RedisValueRead for RedisBufStream<Read> {
+impl<Read: AsyncReadRent> RedisRead for RedisBufStream<Read> {
     async fn read_value(&mut self) -> io::Result<RedisValue> {
         Ok(match self.read_u8().await? {
             // Simple string
@@ -120,7 +85,7 @@ impl<Read: AsyncReadRent> RedisValueRead for RedisBufStream<Read> {
             // Bulk string
             b'$' => RedisValue::String(self.parse_bulk_string().await?),
             // Array
-            b'*' => RedisValue::Array(Box::new(self.parse_array().await?)),
+            b'*' => RedisValue::Array(self.parse_int().await?),
             c => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -152,7 +117,7 @@ impl<Read: AsyncReadRent> RedisBufStream<Read> {
     }
 
     async fn read_u8(&mut self) -> io::Result<u8> {
-        while !self.buffer.has_remaining() {
+        if !self.buffer.has_remaining() {
             self.fill_buf().await?;
         }
         Ok(self.buffer.get_u8())
@@ -224,21 +189,6 @@ impl<Read: AsyncReadRent> RedisBufStream<Read> {
                 format!("Failed to parse integer from line: {}", line),
             )
         })
-    }
-
-    async fn parse_array<'a>(&'a mut self) -> io::Result<RedisArrayStream<'a, Self>> {
-        let len = self.parse_int().await?;
-        return Ok(RedisArrayStream { len, stream: self });
-    }
-}
-
-impl<Read: AsyncReadRent> RedisValueStream for RedisBufStream<Read> {
-    fn read_value_dyn(&mut self) -> RedisStreamItem {
-        Box::pin(async { Some(self.read_value().await) })
-    }
-
-    fn consume_rest<'a>(&'a mut self) -> BoxedFuture<'a, io::Result<()>> {
-        unimplemented!()
     }
 }
 

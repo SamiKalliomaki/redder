@@ -1,4 +1,4 @@
-use std::{io, ops::DerefMut};
+use std::io;
 
 use monoio::{
     net::{TcpListener, TcpStream},
@@ -6,8 +6,9 @@ use monoio::{
 };
 
 use anyhow::Context;
+use protocol::RedisReadExt;
 
-use crate::protocol::{RedisBufStream, RedisValueRead, RedisValueStreamExt, RedisWrite};
+use crate::protocol::{RedisBufStream, RedisWrite};
 
 mod protocol;
 
@@ -15,7 +16,7 @@ async fn handle_connection(stream: TcpStream) -> anyhow::Result<()> {
 
     let mut stream = RedisBufStream::new(stream);
     loop {
-        let mut array = match stream.read_array().await {
+        let _ = match stream.read_array().await {
             Ok(array) => array,
             Err(e) => {
                 if e.kind() == io::ErrorKind::UnexpectedEof {
@@ -24,13 +25,10 @@ async fn handle_connection(stream: TcpStream) -> anyhow::Result<()> {
                 return Err(e).context("Failed to read next command");
             }
         };
-
-        let command = array.deref_mut().read_string_dyn().await?;
+        let command = stream.read_string().await?.to_lowercase();
 
         match command.as_str() {
             "ping" => {
-                array.consume_rest().await?;
-                drop(array);
                 stream.write_simple_string("PONG".to_owned()).await?;
             }
             _ => {
