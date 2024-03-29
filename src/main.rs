@@ -1,5 +1,3 @@
-use std::io;
-
 use monoio::{
     net::{TcpListener, TcpStream},
     spawn,
@@ -13,30 +11,19 @@ use crate::protocol::{RedisBufStream, RedisWrite};
 mod protocol;
 
 async fn handle_connection(stream: TcpStream) -> anyhow::Result<()> {
-
     let mut stream = RedisBufStream::new(stream);
     loop {
-        let _ = match stream.read_array().await {
-            Ok(array) => array,
-            Err(e) => {
-                if e.kind() == io::ErrorKind::UnexpectedEof {
-                    return Ok(());
-                }
-                return Err(e).context("Failed to read next command");
-            }
-        };
-        let command = stream.read_string().await?.to_lowercase();
+        let command = stream.read_string_array().await?;
 
-        match command.as_str() {
+        match command[0].to_lowercase().as_str() {
             "ping" => {
                 stream.write_simple_string("PONG".to_owned()).await?;
             },
             "echo" => {
-                let message = stream.read_string().await?;
-                stream.write_bulk_string(message).await?;
+                stream.write_bulk_string(command[1].clone()).await?;
             },
-            _ => {
-                eprintln!("Unknown command: {}", command);
+            v => {
+                eprintln!("Unknown command: {}", v);
                 continue;
             }
         }

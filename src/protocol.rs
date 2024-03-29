@@ -8,13 +8,24 @@ pub(crate) trait RedisRead {
 }
 
 pub(crate) trait RedisReadExt {
-    async fn read_array(&mut self) -> io::Result<usize>;
     async fn read_string(&mut self) -> io::Result<String>;
+    async fn read_array(&mut self) -> io::Result<usize>;
+    async fn read_string_array(&mut self) -> io::Result<Vec<String>>;
 }
 
 impl<T: RedisRead> RedisReadExt for T {
-    async fn read_array(&mut self) -> io::Result<usize>
-    {
+    async fn read_string(&mut self) -> io::Result<String> {
+        let value = self.read_value().await?;
+        match value {
+            RedisValue::String(s) => Ok(s),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Expected string, got: {:?}", value),
+            )),
+        }
+    }
+
+    async fn read_array(&mut self) -> io::Result<usize> {
         let value = self.read_value().await?;
         match value {
             RedisValue::Array(length) => Ok(length),
@@ -25,16 +36,13 @@ impl<T: RedisRead> RedisReadExt for T {
         }
     }
 
-    async fn read_string(&mut self) -> io::Result<String>
-    {
-        let value = self.read_value().await?;
-        match value {
-            RedisValue::String(s) => Ok(s),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Expected string, got: {:?}", value),
-            )),
+    async fn read_string_array(&mut self) -> io::Result<Vec<String>> {
+        let length = self.read_array().await?;
+        let mut values: Vec<String> = Vec::with_capacity(length);
+        for _ in 0..length {
+            values.push(self.read_string().await?);
         }
+        Ok(values)
     }
 }
 
@@ -42,25 +50,6 @@ impl<T: RedisRead> RedisReadExt for T {
 pub(crate) enum RedisValue {
     String(String),
     Array(usize),
-}
-
-struct RedisArrayStream<'a, T: RedisRead> {
-    stream: &'a mut T,
-    len: usize,
-}
-
-impl<'a, T: RedisRead> RedisRead for RedisArrayStream<'a, T> {
-    async fn read_value(&mut self) -> io::Result<RedisValue> {
-        if self.len == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "Unexpected end of array",
-            ));
-        }
-
-        self.len -= 1;
-        self.stream.read_value().await
-    }
 }
 
 pub(crate) struct RedisBufStream<T> {
