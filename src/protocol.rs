@@ -9,7 +9,7 @@ pub(crate) trait RedisRead {
 
 pub(crate) trait RedisReadExt {
     async fn read_string(&mut self) -> io::Result<String>;
-    async fn read_array(&mut self) -> io::Result<usize>;
+    async fn read_array(&mut self) -> io::Result<i64>;
     async fn read_string_array(&mut self) -> io::Result<Vec<String>>;
 }
 
@@ -25,7 +25,7 @@ impl<T: RedisRead> RedisReadExt for T {
         }
     }
 
-    async fn read_array(&mut self) -> io::Result<usize> {
+    async fn read_array(&mut self) -> io::Result<i64> {
         let value = self.read_value().await?;
         match value {
             RedisValue::Array(length) => Ok(length),
@@ -38,7 +38,14 @@ impl<T: RedisRead> RedisReadExt for T {
 
     async fn read_string_array(&mut self) -> io::Result<Vec<String>> {
         let length = self.read_array().await?;
-        let mut values: Vec<String> = Vec::with_capacity(length);
+        if length < 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Expected non-negative array length, got: {}", length),
+            ));
+        }
+
+        let mut values: Vec<String> = Vec::with_capacity(length as usize);
         for _ in 0..length {
             values.push(self.read_string().await?);
         }
@@ -49,7 +56,7 @@ impl<T: RedisRead> RedisReadExt for T {
 #[derive(Debug)]
 pub(crate) enum RedisValue {
     String(String),
-    Array(usize),
+    Array(i64),
 }
 
 pub(crate) struct RedisBufStream<T> {
