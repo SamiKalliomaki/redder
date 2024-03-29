@@ -19,12 +19,12 @@
     "tester_log_prefix": "stage-4",
     "title": "Stage #4: Handle concurrent clients"
   },
-  END
   {
     "slug": "echo",
     "tester_log_prefix": "stage-5",
     "title": "Stage #5: Implement the ECHO command"
   },
+  END
   {
     "slug": "set_get",
     "tester_log_prefix": "stage-6",

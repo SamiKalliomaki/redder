@@ -30,7 +30,11 @@ async fn handle_connection(stream: TcpStream) -> anyhow::Result<()> {
         match command.as_str() {
             "ping" => {
                 stream.write_simple_string("PONG".to_owned()).await?;
-            }
+            },
+            "echo" => {
+                let message = stream.read_string().await?;
+                stream.write_bulk_string(message).await?;
+            },
             _ => {
                 eprintln!("Unknown command: {}", command);
                 continue;
