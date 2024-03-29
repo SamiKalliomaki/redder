@@ -1,7 +1,13 @@
 use std::{collections::HashMap, sync::RwLock};
+use std::time::Instant;
+
+struct Value {
+    data: String,
+    expiry: Option<Instant>,
+}
 
 pub(crate) struct Database {
-    data: RwLock<HashMap<String, String>>,
+    data: RwLock<HashMap<String, Value>>,
 }
 
 impl Database {
@@ -12,10 +18,21 @@ impl Database {
     }
 
     pub(crate) fn get(&self, key: &str) -> Option<String> {
-        self.data.read().unwrap().get(key).cloned()
+        let lock = self.data.read().unwrap();
+        let value = match lock.get(key) {
+            Some(value) => value,
+            None => return None,
+        };
+
+        if let Some(expiry) = value.expiry {
+            if expiry < Instant::now() {
+                return None;
+            }
+        }
+        return Some(value.data.clone());
     }
 
-    pub(crate) fn set(&self, key: String, value: String) {
-        self.data.write().unwrap().insert(key, value);
+    pub(crate) fn set(&self, key: String, data: String, expiry: Option<Instant>) {
+        self.data.write().unwrap().insert(key, Value { data, expiry });
     }
 }
