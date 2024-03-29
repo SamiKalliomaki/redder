@@ -1,7 +1,7 @@
 use std::io;
 
 use bytes::{Buf, BytesMut};
-use monoio::io::{AsyncReadRent, AsyncWriteRent, AsyncWriteRentExt};
+use monoio::{io::{AsyncReadRent, AsyncWriteRent, AsyncWriteRentExt}, buf::IoBuf};
 
 #[derive(Debug)]
 pub(crate) enum RedisValue {
@@ -189,14 +189,14 @@ impl<Stream: AsyncReadRent> RedisRead for RedisBufStream<Stream> {
 }
 
 pub(crate) trait RedisWrite {
-    async fn write_simple_string(self: &mut Self, s: String) -> io::Result<()>;
-    async fn write_bulk_string(self: &mut Self, s: String) -> io::Result<()>;
+    async fn write_simple_string<T: IoBuf + 'static>(self: &mut Self, s: T) -> io::Result<()>;
+    async fn write_bulk_string<T: IoBuf + 'static>(self: &mut Self, s: T) -> io::Result<()>;
+    async fn write_null_bulk_string(self: &mut Self) -> io::Result<()>;
 }
 
 impl<Stream: AsyncWriteRent> RedisWrite for RedisBufStream<Stream>
 {
-    async fn write_simple_string(self: &mut Self, s: String) -> io::Result<()> {
-        let s = s.into_bytes();
+    async fn write_simple_string<T: IoBuf + 'static>(self: &mut Self, s: T) -> io::Result<()> {
 
         self.stream.write_all(b"+").await.0?;
         self.stream.write_all(s).await.0?;
@@ -205,9 +205,8 @@ impl<Stream: AsyncWriteRent> RedisWrite for RedisBufStream<Stream>
         Ok(())
     }
 
-    async fn write_bulk_string(self: &mut Self, s: String) -> io::Result<()> {
-        let s = s.into_bytes();
-        let size = s.len().to_string().into_bytes();
+    async fn write_bulk_string<T: IoBuf + 'static>(self: &mut Self, s: T) -> io::Result<()> {
+        let size = s.bytes_init().to_string().into_bytes();
 
         self.stream.write_all(b"$").await.0?;
         self.stream.write_all(size).await.0?;
@@ -215,6 +214,11 @@ impl<Stream: AsyncWriteRent> RedisWrite for RedisBufStream<Stream>
         self.stream.write_all(s).await.0?;
         self.stream.write_all(b"\r\n").await.0?;
 
+        Ok(())
+    }
+
+    async fn write_null_bulk_string(self: &mut Self) -> io::Result<()> {
+        self.stream.write_all(b"$-1\r\n").await.0?;
         Ok(())
     }
 }

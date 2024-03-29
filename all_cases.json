@@ -24,12 +24,12 @@
     "tester_log_prefix": "stage-5",
     "title": "Stage #5: Implement the ECHO command"
   },
-  END
   {
     "slug": "set_get",
     "tester_log_prefix": "stage-6",
     "title": "Stage #6: Implement the SET & GET commands"
   },
+  END
   {
     "slug": "expiry",
     "tester_log_prefix": "stage-7",
