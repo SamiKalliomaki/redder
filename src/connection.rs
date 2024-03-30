@@ -2,14 +2,11 @@ use std::{
     collections::{HashMap, VecDeque},
     future::Future,
     pin::Pin,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use bytes::BytesMut;
-use monoio::{
-    io::{AsyncReadRent, AsyncWriteRent},
-    time::Instant,
-};
+use monoio::io::{AsyncReadRent, AsyncWriteRent};
 
 use crate::{
     database::{Database, Value},
@@ -181,10 +178,10 @@ impl<'db, Stream: AsyncReadRent + AsyncWriteRent> Connection<'db, Stream> {
         let key = args.next().unwrap();
         let value = args.next().unwrap();
 
-        let expiry: Option<Instant>;
+        let expiry: Option<SystemTime>;
         if let Some(px) = command.named_args.get("px") {
             let px = std::str::from_utf8(&px[0])?.parse::<u64>()?;
-            expiry = Some(Instant::now() + Duration::from_millis(px));
+            expiry = Some(SystemTime::now() + Duration::from_millis(px));
         } else {
             expiry = None;
         }

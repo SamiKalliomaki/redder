@@ -54,6 +54,11 @@
     "tester_log_prefix": "stage-11",
     "title": "Stage #11: RDB read multiple values"
   },
+  {
+    "slug": "rdb-read-value-with-expiry",
+    "tester_log_prefix": "stage-12",
+    "title": "Stage #12: RDB read value with expiry"
+  },
   END
   {
     "slug": "repl-custom-port",

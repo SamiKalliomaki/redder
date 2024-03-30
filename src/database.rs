@@ -1,6 +1,4 @@
-use std::{collections::HashMap, sync::{RwLock, RwLockReadGuard, RwLockWriteGuard}};
-
-use monoio::time::Instant;
+use std::{collections::HashMap, sync::{RwLock, RwLockReadGuard, RwLockWriteGuard}, time::SystemTime};
 
 pub(crate) enum Value {
     String(Vec<u8>),
@@ -8,7 +6,7 @@ pub(crate) enum Value {
 
 pub(crate) struct Dataset {
     data: HashMap<Box<[u8]>, Value>,
-    expiry: HashMap<Box<[u8]>, Instant>,
+    expiry: HashMap<Box<[u8]>, SystemTime>,
 }
 
 impl Dataset {
@@ -22,7 +20,7 @@ impl Dataset {
     pub(crate) fn get(&self, key: &[u8]) -> Option<&Value> {
         // TODO: Instead clear keys on expiry
         if let Some(expiry) = self.expiry.get(key) {
-            if expiry < &Instant::now() {
+            if expiry < &SystemTime::now() {
                 return None;
             }
         }
@@ -33,7 +31,7 @@ impl Dataset {
         self.data.insert(key, value);
     }
 
-    pub(crate) fn set_expiry(&mut self, key: Box<[u8]>, expiry: Instant) {
+    pub(crate) fn set_expiry(&mut self, key: Box<[u8]>, expiry: SystemTime) {
         self.expiry.insert(key, expiry);
     }
 

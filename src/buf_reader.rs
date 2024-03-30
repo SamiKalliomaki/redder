@@ -12,6 +12,9 @@ pub(crate) trait BufReader {
 pub(crate) trait BufReaderExt {
     async fn fill_buf(&mut self) -> io::Result<usize>;
     async fn read_u8(&mut self) -> io::Result<u8>;
+    async fn read_u16(&mut self) -> io::Result<u16>;
+    async fn read_u32(&mut self) -> io::Result<u32>;
+    async fn read_u64(&mut self) -> io::Result<u64>;
     async fn read_bytes(&mut self, len: usize) -> io::Result<BytesMut>;
     async fn read_until(&mut self, delimeter: &[u8]) -> io::Result<BytesMut>;
 }
@@ -108,6 +111,27 @@ impl<R: BufReader> BufReaderExt for R {
             self.fill_buf().await?;
         }
         Ok(self.buffer_mut().get_u8())
+    }
+
+    async fn read_u16(&mut self) -> io::Result<u16> {
+        while self.buffer().len() < 2 {
+            self.fill_buf().await?;
+        }
+        Ok(self.buffer_mut().get_u16_le())
+    }
+
+    async fn read_u32(&mut self) -> io::Result<u32> {
+        while self.buffer().len() < 4 {
+            self.fill_buf().await?;
+        }
+        Ok(self.buffer_mut().get_u32_le())
+    }
+
+    async fn read_u64(&mut self) -> io::Result<u64> {
+        while self.buffer().len() < 8 {
+            self.fill_buf().await?;
+        }
+        Ok(self.buffer_mut().get_u64_le())
     }
 
     async fn read_bytes(&mut self, len: usize) -> io::Result<BytesMut> {
