@@ -83,6 +83,11 @@ fn create_command_specs<'db, Stream: AsyncReadRent + AsyncWriteRent>() -> CmdSpe
     cmd!(specs, "echo", handle_echo, leading(1));
     cmd!(specs, "get", handle_get, leading(1));
     cmd!(specs, "set", handle_set, leading(2), named("px", 1));
+    {
+        let mut sub_specs: CmdSpecs<'db, Stream> = HashMap::new();
+        cmd!(sub_specs, "get", handle_config_get, leading(1));
+        specs.insert("config", CmdListItem::SubSpecs(sub_specs));
+    }
 
     return specs;
 }
@@ -171,6 +176,20 @@ impl<'db, Stream: AsyncReadRent + AsyncWriteRent> Connection<'db, Stream> {
 
         self.db.set(key, value, expiry);
         self.stream.write_simple_string("OK").await?;
+        Ok(())
+    }
+
+    async fn handle_config_get(&mut self, command: ParsedArgs) -> anyhow::Result<()> {
+        let key = &command.args[0];
+        let value = self.db.get_config(key);
+        match value {
+            Some(value) => {
+                self.stream.write_bulk_string(value.into_bytes()).await?;
+            }
+            None => {
+                self.stream.write_null_bulk_string().await?;
+            }
+        }
         Ok(())
     }
 
