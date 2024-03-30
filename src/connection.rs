@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     future::Future,
-    pin::Pin,
+    pin::Pin, time::{Instant, Duration},
 };
 
 use monoio::io::{AsyncReadRent, AsyncWriteRent};
@@ -66,7 +66,9 @@ fn create_command_specs<'db, Stream: AsyncReadRent + AsyncWriteRent>(
     );
     specs.insert(
         "set",
-        CmdSpec::new(|conn, command| Box::pin(conn.handle_set(command))).leading(2),
+        CmdSpec::new(|conn, command| Box::pin(conn.handle_set(command)))
+            .leading(2)
+            .named("px", 1),
     );
 
     return specs;
@@ -85,11 +87,11 @@ fn parse_args(
     let mut named_args: HashMap<&'static str, Vec<String>> = HashMap::new();
 
     while !unparsed_args.is_empty() {
-        let arg = unparsed_args.pop_front().unwrap();
+        let arg = unparsed_args.pop_front().unwrap().to_lowercase();
 
         let named_arg = named_arg_argc.get_key_value(arg.as_str());
         if let Some((key, argc)) = named_arg {
-            if *argc >= unparsed_args.len() {
+            if *argc > unparsed_args.len() {
                 anyhow::bail!("Missing value for named argument: {}", arg);
             }
             named_args.insert(key, unparsed_args.drain(..*argc).collect());
@@ -98,10 +100,7 @@ fn parse_args(
         }
     }
 
-    Ok(ParsedArgs {
-        args,
-        named_args
-    })
+    Ok(ParsedArgs { args, named_args })
 }
 
 pub(crate) struct Connection<'db, Stream: AsyncReadRent + AsyncWriteRent> {
@@ -151,7 +150,15 @@ impl<'db, Stream: AsyncReadRent + AsyncWriteRent> Connection<'db, Stream> {
         let key = args.next().unwrap();
         let value = args.next().unwrap();
 
-        self.db.set(key, value, None);
+        let expiry: Option<Instant>;
+        if let Some(px) = command.named_args.get("px") {
+            let px = px[0].parse::<u64>()?;
+            expiry = Some(Instant::now() + Duration::from_millis(px));
+        } else {
+            expiry = None;
+        }
+
+        self.db.set(key, value, expiry);
         self.stream.write_simple_string("OK").await?;
         Ok(())
     }

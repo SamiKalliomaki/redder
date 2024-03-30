@@ -29,12 +29,12 @@
     "tester_log_prefix": "stage-6",
     "title": "Stage #6: Implement the SET & GET commands"
   },
-  END
   {
     "slug": "expiry",
     "tester_log_prefix": "stage-7",
     "title": "Stage #7: Expiry"
   },
+  END
   {
     "slug": "repl-custom-port",
     "tester_log_prefix": "stage-101",
