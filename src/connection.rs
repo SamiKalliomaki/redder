@@ -1,7 +1,8 @@
 use std::{
     collections::{HashMap, VecDeque},
     future::Future,
-    pin::Pin, time::{Instant, Duration},
+    pin::Pin,
+    time::{Duration, Instant},
 };
 
 use monoio::io::{AsyncReadRent, AsyncWriteRent};
@@ -25,6 +26,13 @@ struct CmdSpec<'db, Stream: AsyncReadRent + AsyncWriteRent> {
     named_arg_argc: HashMap<&'static str, usize>,
     handler: CmdHandler<'db, Stream>,
 }
+
+enum CmdListItem<'db, Stream: AsyncReadRent + AsyncWriteRent> {
+    Spec(CmdSpec<'db, Stream>),
+    SubSpecs(CmdSpecs<'db, Stream>),
+}
+
+type CmdSpecs<'db, Stream> = HashMap<&'static str, CmdListItem<'db, Stream>>;
 
 impl<'db, Stream: AsyncReadRent + AsyncWriteRent> CmdSpec<'db, Stream> {
     fn new(handler: CmdHandler<'db, Stream>) -> Self {
@@ -51,24 +59,32 @@ impl<'db, Stream: AsyncReadRent + AsyncWriteRent> CmdSpec<'db, Stream> {
     }
 }
 
-fn create_command_specs<'db, Stream: AsyncReadRent + AsyncWriteRent>(
-) -> HashMap<&'static str, CmdSpec<'db, Stream>> {
-    let mut specs = HashMap::new();
+fn create_command_specs<'db, Stream: AsyncReadRent + AsyncWriteRent>() -> CmdSpecs<'db, Stream> {
+    let mut specs: CmdSpecs<'db, Stream> = HashMap::new();
 
-    specs.insert("ping", CmdSpec::new(|conn, _| Box::pin(conn.handle_ping())));
+    specs.insert(
+        "ping",
+        CmdListItem::Spec(CmdSpec::new(|conn, _| Box::pin(conn.handle_ping()))),
+    );
     specs.insert(
         "echo",
-        CmdSpec::new(|conn, command| Box::pin(conn.handle_echo(command))).leading(1),
+        CmdListItem::Spec(
+            CmdSpec::new(|conn, command| Box::pin(conn.handle_echo(command))).leading(1),
+        ),
     );
     specs.insert(
         "get",
-        CmdSpec::new(|conn, command| Box::pin(conn.handle_get(command))).leading(1),
+        CmdListItem::Spec(
+            CmdSpec::new(|conn, command| Box::pin(conn.handle_get(command))).leading(1),
+        ),
     );
     specs.insert(
         "set",
-        CmdSpec::new(|conn, command| Box::pin(conn.handle_set(command)))
-            .leading(2)
-            .named("px", 1),
+        CmdListItem::Spec(
+            CmdSpec::new(|conn, command| Box::pin(conn.handle_set(command)))
+                .leading(2)
+                .named("px", 1),
+        ),
     );
 
     return specs;
@@ -79,8 +95,6 @@ fn parse_args(
     named_arg_argc: &HashMap<&'static str, usize>,
     mut unparsed_args: VecDeque<String>,
 ) -> anyhow::Result<ParsedArgs> {
-    unparsed_args.pop_front(); // Pop the command name.
-
     anyhow::ensure!(unparsed_args.len() >= leading_argc, "Not enough arguments");
 
     let mut args = unparsed_args.drain(..leading_argc).collect::<Vec<String>>();
@@ -104,7 +118,7 @@ fn parse_args(
 }
 
 pub(crate) struct Connection<'db, Stream: AsyncReadRent + AsyncWriteRent> {
-    specs: HashMap<&'static str, CmdSpec<'db, Stream>>,
+    specs: CmdSpecs<'db, Stream>,
     db: &'db Database,
     stream: RedisBufStream<Stream>,
 }
@@ -164,19 +178,34 @@ impl<'db, Stream: AsyncReadRent + AsyncWriteRent> Connection<'db, Stream> {
     }
 
     pub(crate) async fn handle_connection(&mut self) -> anyhow::Result<()> {
+        let mut names: Vec<String> = Vec::new();
         loop {
-            let command = self.stream.read_string_array().await?;
+            let mut command: VecDeque<_> = self.stream.read_string_array().await?.into();
+            names.clear();
 
-            let spec = match self.specs.get(command[0].as_str()) {
-                Some(spec) => spec,
-                None => {
-                    anyhow::bail!("Unknown command: {}", command[0]);
-                }
-            };
+            let mut map = &self.specs;
+            let found_spec: &CmdSpec<'db, Stream>;
+            loop {
+                anyhow::ensure!(!command.is_empty(), "Unexpected end of command: {:?}", names);
 
-            let parsed_args = parse_args(spec.leading_argc, &spec.named_arg_argc, command.into())?;
+                let name = command.pop_front().unwrap().to_lowercase();
+                match map.get(name.as_str()) {
+                    Some(CmdListItem::Spec(spec)) => {
+                        found_spec = spec;
+                        break;
+                    },
+                    Some(CmdListItem::SubSpecs(sub_cmds)) => {
+                        names.push(name);
+                        map = sub_cmds;
+                    },
+                    None => {
+                        anyhow::bail!("Unknown command: {}", command[0]);
+                    }
+                };
+            }
 
-            let handler = spec.handler;
+            let parsed_args = parse_args(found_spec.leading_argc, &found_spec.named_arg_argc, command)?;
+            let handler = found_spec.handler;
             handler(self, parsed_args).await?;
         }
     }
