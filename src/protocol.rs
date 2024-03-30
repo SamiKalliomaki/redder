@@ -192,6 +192,7 @@ pub(crate) trait RedisWrite {
     async fn write_simple_string<T: IoBuf + 'static>(&mut self, s: T) -> io::Result<()>;
     async fn write_bulk_string<T: IoBuf + 'static>(&mut self, s: T) -> io::Result<()>;
     async fn write_null_bulk_string(&mut self) -> io::Result<()>;
+    async fn write_bulk_string_opt(&mut self, s: Option<String>) -> io::Result<()>;
     async fn write_array(&mut self, size: i64) -> io::Result<()>;
 }
 
@@ -221,6 +222,13 @@ impl<Stream: AsyncWriteRent> RedisWrite for RedisBufStream<Stream>
     async fn write_null_bulk_string(&mut self) -> io::Result<()> {
         self.stream.write_all(b"$-1\r\n").await.0?;
         Ok(())
+    }
+
+    async fn write_bulk_string_opt(&mut self, s: Option<String>) -> io::Result<()> {
+        match s {
+            Some(s) => self.write_bulk_string(s.into_bytes()).await,
+            None => self.write_null_bulk_string().await,
+        }
     }
 
     async fn write_array(&mut self, size: i64) -> io::Result<()> {
