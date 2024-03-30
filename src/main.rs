@@ -1,19 +1,22 @@
-use std::{thread, sync::Arc};
+use std::{thread, sync::Arc, path::{self, Path}};
 
 use clap::Parser;
 use database::Database;
 use monoio::{
     net::{TcpListener, TcpStream},
-    spawn,
+    spawn, fs,
 };
 
 use anyhow::Context;
+use rdb::read_rdb;
 
 use crate::connection::Connection;
 
+mod buf_reader;
 mod connection;
 mod database;
 mod protocol;
+mod rdb;
 
 #[derive(Parser)]
 struct Cli {
@@ -40,10 +43,35 @@ async fn handle_connection_spawn(db: Arc<Database>, stream: TcpStream) {
     }
 }
 
+
+async fn read_db(db: &mut Database, dir: &str, dbfilename: &str) -> anyhow::Result<()> {
+    let path = path::Path::join(&Path::new(dir), &dbfilename);
+    let file = match fs::File::open(path).await {
+        Ok(file) => file,
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                println!("RDB file not found, starting with empty database");
+                return Ok(());
+            } else {
+                return Err(e).context("Failed to open RDB file");
+            }
+        }
+    };
+
+    db.swap_datasets(read_rdb(file).await?);
+
+    Ok(())
+}
+
 async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    let db = Arc::new(Database::new());
+    let mut db = Database::new();
+    if let (Some(ref dir), Some(ref dbfilename)) = (&cli.dir, &cli.dbfilename) {
+        read_db(&mut db, dir, dbfilename).await?;
+    }
+    let db = Arc::new(db);
+
     if let Some(dir) = cli.dir {
         db.set_config(b"dir", dir);
     }

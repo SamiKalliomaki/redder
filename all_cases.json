@@ -39,6 +39,21 @@
     "tester_log_prefix": "stage-8",
     "title": "Stage #8: RDB Config"
   },
+  {
+    "slug": "rdb-read-key",
+    "tester_log_prefix": "stage-9",
+    "title": "Stage #9: RDB read key"
+  },
+  {
+    "slug": "rdb-read-string-value",
+    "tester_log_prefix": "stage-10",
+    "title": "Stage #10: RDB read string value"
+  },
+  {
+    "slug": "rdb-read-multiple-keys",
+    "tester_log_prefix": "stage-11",
+    "title": "Stage #11: RDB read multiple values"
+  },
   END
   {
     "slug": "repl-custom-port",

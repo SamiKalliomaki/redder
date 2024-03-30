@@ -5,7 +5,6 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Context;
 use bytes::BytesMut;
 use monoio::{
     io::{AsyncReadRent, AsyncWriteRent},
@@ -13,8 +12,8 @@ use monoio::{
 };
 
 use crate::{
-    database::Database,
-    protocol::{RedisBufStream, RedisReadExt, RedisWrite},
+    database::{Database, Value},
+    protocol::{RedisReadExt, RedisWrite}, buf_reader::TcpBufReader,
 };
 
 struct ParsedArgs {
@@ -85,6 +84,7 @@ fn create_command_specs<'db, Stream: AsyncReadRent + AsyncWriteRent>() -> CmdSpe
     cmd!(specs, "echo", handle_echo, leading(1));
     cmd!(specs, "get", handle_get, leading(1));
     cmd!(specs, "set", handle_set, leading(2), named("px", 1));
+    cmd!(specs, "keys", handle_keys, leading(1));
 
     {
         // Subcommand: config
@@ -129,7 +129,7 @@ fn parse_args(
 pub(crate) struct Connection<'db, Stream: AsyncReadRent + AsyncWriteRent> {
     specs: CmdSpecs<'db, Stream>,
     db: &'db Database,
-    stream: RedisBufStream<Stream>,
+    stream: TcpBufReader<Stream>,
 }
 
 impl<'db, Stream: AsyncReadRent + AsyncWriteRent> Connection<'db, Stream> {
@@ -137,7 +137,7 @@ impl<'db, Stream: AsyncReadRent + AsyncWriteRent> Connection<'db, Stream> {
         Self {
             specs: create_command_specs(),
             db,
-            stream: RedisBufStream::new(stream),
+            stream: TcpBufReader::new(stream),
         }
     }
 
@@ -155,8 +155,22 @@ impl<'db, Stream: AsyncReadRent + AsyncWriteRent> Connection<'db, Stream> {
     }
 
     async fn handle_get(&mut self, command: ParsedArgs) -> anyhow::Result<()> {
-        let key = &command.args[0];
-        let value = self.db.get(key);
+        let mut args = command.args.into_iter();
+        let key = args.next().unwrap();
+
+        let value;
+        {
+            let lock = self.db.read(0);
+            match lock.get(&key) {
+                Some(Value::String(data)) => {
+                    value = Some(data.clone());
+                }
+                // TODO: Handle more data types?
+                _ => {
+                    value = None;
+                }
+            }
+        }
 
         self.stream.write_bulk_string_opt(value).await?;
         Ok(())
@@ -175,7 +189,16 @@ impl<'db, Stream: AsyncReadRent + AsyncWriteRent> Connection<'db, Stream> {
             expiry = None;
         }
 
-        self.db.set(&key, &value, expiry);
+        let key = key.to_vec().into_boxed_slice();
+        let value = value.to_vec();
+        {
+            let mut lock = self.db.write(0);
+            match expiry {
+                Some(expiry) => lock.set_expiry(key.clone(), expiry),
+                None => lock.unset_expiry(&key),
+            }
+            lock.set(key, Value::String(value));
+        }
         self.stream.write_simple_string("OK").await?;
         Ok(())
     }
@@ -190,6 +213,26 @@ impl<'db, Stream: AsyncReadRent + AsyncWriteRent> Connection<'db, Stream> {
         self.stream
             .write_bulk_string_opt(value.map(|v| v.into_bytes()))
             .await?;
+        Ok(())
+    }
+
+    async fn handle_keys(&mut self, command: ParsedArgs) -> anyhow::Result<()> {
+        let mut args = command.args.into_iter();
+        let pattern = args.next().unwrap();
+
+        if pattern.as_ref() != b"*" {
+            anyhow::bail!("Unsupported pattern: {:?}", pattern);
+        }
+
+        let keys;
+        {
+            let lock = self.db.read(0);
+            keys = lock.all_keys().into_iter().map(|k| k.to_vec()).collect::<Vec<_>>();
+        }
+        self.stream.write_array(keys.len() as i64).await?;
+        for key in keys {
+            self.stream.write_bulk_string(key).await?;
+        }
         Ok(())
     }
 

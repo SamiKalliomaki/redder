@@ -1,7 +1,9 @@
 use std::io;
 
-use bytes::{Buf, BytesMut};
-use monoio::{io::{AsyncReadRent, AsyncWriteRent, AsyncWriteRentExt}, buf::IoBuf};
+use bytes::BytesMut;
+use monoio::{io::{AsyncWriteRent, AsyncWriteRentExt}, buf::IoBuf};
+
+use crate::buf_reader::{TcpBufReader, BufReader, BufReaderExt};
 
 #[derive(Debug)]
 pub(crate) enum RedisValue {
@@ -59,62 +61,20 @@ impl<T: RedisRead> RedisReadExt for T {
     }
 }
 
-pub(crate) struct RedisBufStream<Stream> {
-    stream: Stream,
-    buffer: BytesMut,
+trait FooBar {
+    async fn read_line(&mut self) -> io::Result<BytesMut>;
+    async fn parse_line(&mut self) -> io::Result<String>;
+    async fn parse_bulk_string(&mut self) -> io::Result<BytesMut>;
+    async fn parse_int<T>(&mut self) -> io::Result<T>
+    where
+        T: std::str::FromStr;
 }
 
-impl<Stream> RedisBufStream<Stream> {
-    pub fn new(stream: Stream) -> Self {
-        Self {
-            stream,
-            buffer: BytesMut::new(),
-        }
-    }
-}
-
-impl<Stream: AsyncReadRent> RedisBufStream<Stream> {
-    async fn fill_buf(&mut self) -> io::Result<usize> {
-        if self.buffer.capacity() < 1024 {
-            self.buffer.reserve(1024 * 1024);
-        }
-
-        let (n, buffer) = self.stream.read(self.buffer.split_off(0)).await;
-        self.buffer = buffer;
-
-        let n = n?;
-        if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "Unexpected EOF",
-            ));
-        }
-
-        Ok(n)
-    }
-
-    async fn read_u8(&mut self) -> io::Result<u8> {
-        if !self.buffer.has_remaining() {
-            self.fill_buf().await?;
-        }
-        Ok(self.buffer.get_u8())
-    }
-
+impl<R: BufReader> FooBar for R {
     async fn read_line(&mut self) -> io::Result<BytesMut> {
-        let mut line = BytesMut::new();
-        loop {
-            match self.buffer.windows(2).position(|bytes| bytes == b"\r\n") {
-                Some(pos) => {
-                    line.unsplit(self.buffer.split_to(pos));
-                    self.buffer.advance(2);
-                    return Ok(line);
-                }
-                None => {
-                    line.unsplit(self.buffer.split());
-                    self.fill_buf().await?;
-                }
-            }
-        }
+        let mut buf = self.read_until(b"\r\n").await?;
+        buf.truncate(buf.len() - 2);
+        return Ok(buf);
     }
 
     async fn parse_line(&mut self) -> io::Result<String> {
@@ -122,14 +82,6 @@ impl<Stream: AsyncReadRent> RedisBufStream<Stream> {
         Ok(String::from_utf8(line.to_vec()).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 data")
         })?)
-    }
-
-    async fn read_bytes(&mut self, len: usize) -> io::Result<BytesMut> {
-        while self.buffer.len() < len {
-            self.fill_buf().await?;
-        }
-
-        Ok(self.buffer.split_to(len))
     }
 
     async fn parse_bulk_string(&mut self) -> io::Result<BytesMut> {
@@ -159,7 +111,7 @@ impl<Stream: AsyncReadRent> RedisBufStream<Stream> {
     }
 }
 
-impl<Stream: AsyncReadRent> RedisRead for RedisBufStream<Stream> {
+impl<R: BufReader> RedisRead for R {
     async fn read_value(&mut self) -> io::Result<RedisValue> {
         Ok(match self.read_u8().await? {
             // Simple string
@@ -186,13 +138,13 @@ pub(crate) trait RedisWrite {
     async fn write_array(&mut self, size: i64) -> io::Result<()>;
 }
 
-impl<Stream: AsyncWriteRent> RedisWrite for RedisBufStream<Stream>
+impl<W: AsyncWriteRent> RedisWrite for TcpBufReader<W>
 {
     async fn write_simple_string<T: IoBuf + 'static>(&mut self, s: T) -> io::Result<()> {
 
-        self.stream.write_all(b"+").await.0?;
-        self.stream.write_all(s).await.0?;
-        self.stream.write_all(b"\r\n").await.0?;
+        self.inner.write_all(b"+").await.0?;
+        self.inner.write_all(s).await.0?;
+        self.inner.write_all(b"\r\n").await.0?;
 
         Ok(())
     }
@@ -200,17 +152,17 @@ impl<Stream: AsyncWriteRent> RedisWrite for RedisBufStream<Stream>
     async fn write_bulk_string<T: IoBuf + 'static>(&mut self, s: T) -> io::Result<()> {
         let size = s.bytes_init().to_string().into_bytes();
 
-        self.stream.write_all(b"$").await.0?;
-        self.stream.write_all(size).await.0?;
-        self.stream.write_all(b"\r\n").await.0?;
-        self.stream.write_all(s).await.0?;
-        self.stream.write_all(b"\r\n").await.0?;
+        self.inner.write_all(b"$").await.0?;
+        self.inner.write_all(size).await.0?;
+        self.inner.write_all(b"\r\n").await.0?;
+        self.inner.write_all(s).await.0?;
+        self.inner.write_all(b"\r\n").await.0?;
 
         Ok(())
     }
 
     async fn write_null_bulk_string(&mut self) -> io::Result<()> {
-        self.stream.write_all(b"$-1\r\n").await.0?;
+        self.inner.write_all(b"$-1\r\n").await.0?;
         Ok(())
     }
 
@@ -224,9 +176,9 @@ impl<Stream: AsyncWriteRent> RedisWrite for RedisBufStream<Stream>
     async fn write_array(&mut self, size: i64) -> io::Result<()> {
         let size = size.to_string().into_bytes();
 
-        self.stream.write_all(b"*").await.0?;
-        self.stream.write_all(size).await.0?;
-        self.stream.write_all(b"\r\n").await.0?;
+        self.inner.write_all(b"*").await.0?;
+        self.inner.write_all(size).await.0?;
+        self.inner.write_all(b"\r\n").await.0?;
 
         Ok(())
     }
