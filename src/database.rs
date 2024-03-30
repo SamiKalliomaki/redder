@@ -74,39 +74,6 @@ impl Database {
         self.datasets[dataset].write().unwrap()
     }
 
-    // pub(crate) fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-    //     let lock = self.datasets[0].read().unwrap();
-    //
-    //     let value = match lock.get(key) {
-    //         Some(value) => value,
-    //         None => return None,
-    //     };
-    //
-    //     if let Some(expiry) = lock.get_expiry(key) {
-    //         if expiry < &Instant::now() {
-    //             return None;
-    //         }
-    //     }
-    //
-    //     match value {
-    //         Value::String(data) => Some(data.clone()),
-    //     }
-    // }
-    //
-    // pub(crate) fn set(&self, key: &[u8], data: &[u8], expiry: Option<Instant>) {
-    //     let key = key.to_vec().into_boxed_slice();
-    //     let data = data.to_vec();
-    //
-    //     let lock = &mut self.datasets[0].write().unwrap();
-    //
-    //     if let Some(expiry) = expiry {
-    //         lock.set_expiry(key.clone(), expiry);
-    //     } else {
-    //         lock.unset_expiry(&key);
-    //     }
-    //     lock.set(key, Value::String(data));
-    // }
-
     pub(crate) fn swap_datasets(&mut self, datasets: Vec<Dataset>) {
         self.datasets = datasets.into_iter().map(|data| RwLock::new(data)).collect();
     }
