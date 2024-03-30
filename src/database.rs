@@ -1,20 +1,32 @@
 use std::{collections::HashMap, sync::RwLock};
-use std::time::Instant;
+
+use monoio::time::Instant;
 
 struct Value {
     data: String,
     expiry: Option<Instant>,
 }
 
+
 pub(crate) struct Database {
+    config: RwLock<HashMap<String, String>>,
     data: RwLock<HashMap<String, Value>>,
 }
 
 impl Database {
     pub(crate) fn new() -> Self {
         Self {
+            config: RwLock::new(HashMap::new()),
             data: RwLock::new(HashMap::new()),
         }
+    }
+
+    pub(crate) fn get_config(&self, key: &str) -> Option<String> {
+        self.config.read().unwrap().get(key).cloned()
+    }
+
+    pub(crate) fn set_config(&self, key: String, value: String) {
+        self.config.write().unwrap().insert(key, value);
     }
 
     pub(crate) fn get(&self, key: &str) -> Option<String> {

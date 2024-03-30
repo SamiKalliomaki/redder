@@ -1,11 +1,10 @@
 use std::{
     collections::{HashMap, VecDeque},
     future::Future,
-    pin::Pin,
-    time::{Duration, Instant},
+    pin::Pin, time::Duration,
 };
 
-use monoio::io::{AsyncReadRent, AsyncWriteRent};
+use monoio::{io::{AsyncReadRent, AsyncWriteRent}, time::Instant};
 
 use crate::{
     database::Database,
