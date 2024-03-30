@@ -1,5 +1,6 @@
 use std::{thread, sync::Arc};
 
+use clap::Parser;
 use database::Database;
 use monoio::{
     net::{TcpListener, TcpStream},
@@ -13,6 +14,17 @@ use crate::connection::Connection;
 mod connection;
 mod database;
 mod protocol;
+
+#[derive(Parser)]
+struct Cli {
+    /// RDB storage directory
+    #[clap(long)]
+    dir: Option<String>,
+
+    /// RDB storage file name
+    #[clap(long)]
+    dbfilename: Option<String>,
+}
 
 async fn handle_connection_spawn(db: Arc<Database>, stream: TcpStream) {
     let addr = stream.peer_addr().unwrap();
@@ -29,7 +41,16 @@ async fn handle_connection_spawn(db: Arc<Database>, stream: TcpStream) {
 }
 
 async fn run() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
     let db = Arc::new(Database::new());
+    if let Some(dir) = cli.dir {
+        db.set_config("dir".to_owned(), dir);
+    }
+    if let Some(dbfilename) = cli.dbfilename {
+        db.set_config("dbfilename".to_owned(), dbfilename);
+    }
+
     let listener = TcpListener::bind("127.0.0.1:6379").context("Failed to bind")?;
     loop {
         let (stream, _) = listener

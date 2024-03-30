@@ -180,8 +180,12 @@ impl<'db, Stream: AsyncReadRent + AsyncWriteRent> Connection<'db, Stream> {
     }
 
     async fn handle_config_get(&mut self, command: ParsedArgs) -> anyhow::Result<()> {
-        let key = &command.args[0];
-        let value = self.db.get_config(key);
+        let mut args = command.args.into_iter();
+        let key = args.next().unwrap();
+
+        let value = self.db.get_config(&key);
+        self.stream.write_array(2).await?;
+        self.stream.write_bulk_string(key.into_bytes()).await?;
         match value {
             Some(value) => {
                 self.stream.write_bulk_string(value.into_bytes()).await?;

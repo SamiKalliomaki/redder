@@ -189,14 +189,15 @@ impl<Stream: AsyncReadRent> RedisRead for RedisBufStream<Stream> {
 }
 
 pub(crate) trait RedisWrite {
-    async fn write_simple_string<T: IoBuf + 'static>(self: &mut Self, s: T) -> io::Result<()>;
-    async fn write_bulk_string<T: IoBuf + 'static>(self: &mut Self, s: T) -> io::Result<()>;
-    async fn write_null_bulk_string(self: &mut Self) -> io::Result<()>;
+    async fn write_simple_string<T: IoBuf + 'static>(&mut self, s: T) -> io::Result<()>;
+    async fn write_bulk_string<T: IoBuf + 'static>(&mut self, s: T) -> io::Result<()>;
+    async fn write_null_bulk_string(&mut self) -> io::Result<()>;
+    async fn write_array(&mut self, size: i64) -> io::Result<()>;
 }
 
 impl<Stream: AsyncWriteRent> RedisWrite for RedisBufStream<Stream>
 {
-    async fn write_simple_string<T: IoBuf + 'static>(self: &mut Self, s: T) -> io::Result<()> {
+    async fn write_simple_string<T: IoBuf + 'static>(&mut self, s: T) -> io::Result<()> {
 
         self.stream.write_all(b"+").await.0?;
         self.stream.write_all(s).await.0?;
@@ -205,7 +206,7 @@ impl<Stream: AsyncWriteRent> RedisWrite for RedisBufStream<Stream>
         Ok(())
     }
 
-    async fn write_bulk_string<T: IoBuf + 'static>(self: &mut Self, s: T) -> io::Result<()> {
+    async fn write_bulk_string<T: IoBuf + 'static>(&mut self, s: T) -> io::Result<()> {
         let size = s.bytes_init().to_string().into_bytes();
 
         self.stream.write_all(b"$").await.0?;
@@ -217,8 +218,18 @@ impl<Stream: AsyncWriteRent> RedisWrite for RedisBufStream<Stream>
         Ok(())
     }
 
-    async fn write_null_bulk_string(self: &mut Self) -> io::Result<()> {
+    async fn write_null_bulk_string(&mut self) -> io::Result<()> {
         self.stream.write_all(b"$-1\r\n").await.0?;
+        Ok(())
+    }
+
+    async fn write_array(&mut self, size: i64) -> io::Result<()> {
+        let size = size.to_string().into_bytes();
+
+        self.stream.write_all(b"*").await.0?;
+        self.stream.write_all(size).await.0?;
+        self.stream.write_all(b"\r\n").await.0?;
+
         Ok(())
     }
 }

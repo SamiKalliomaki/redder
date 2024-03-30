@@ -34,6 +34,11 @@
     "tester_log_prefix": "stage-7",
     "title": "Stage #7: Expiry"
   },
+  {
+    "slug": "rdb-config",
+    "tester_log_prefix": "stage-8",
+    "title": "Stage #8: RDB Config"
+  },
   END
   {
     "slug": "repl-custom-port",
