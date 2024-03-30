@@ -1,10 +1,14 @@
 use std::{
     collections::{HashMap, VecDeque},
     future::Future,
-    pin::Pin, time::Duration,
+    pin::Pin,
+    time::Duration,
 };
 
-use monoio::{io::{AsyncReadRent, AsyncWriteRent}, time::Instant};
+use monoio::{
+    io::{AsyncReadRent, AsyncWriteRent},
+    time::Instant,
+};
 
 use crate::{
     database::Database,
@@ -58,33 +62,27 @@ impl<'db, Stream: AsyncReadRent + AsyncWriteRent> CmdSpec<'db, Stream> {
     }
 }
 
+macro_rules! cmd {
+    ($map:expr, $name:expr, $handler:ident $(, $mod_name:ident ( $( $mod_arg:expr ),* ) )* ) => {
+        let spec = CmdSpec::new(|conn, command|
+              Box::pin(conn.$handler(command))
+        );
+        $(
+            let spec = spec.$mod_name($( $mod_arg, )*);
+        )*
+        $map.insert(
+          $name,
+          CmdListItem::Spec(spec));
+    }
+}
+
 fn create_command_specs<'db, Stream: AsyncReadRent + AsyncWriteRent>() -> CmdSpecs<'db, Stream> {
     let mut specs: CmdSpecs<'db, Stream> = HashMap::new();
 
-    specs.insert(
-        "ping",
-        CmdListItem::Spec(CmdSpec::new(|conn, _| Box::pin(conn.handle_ping()))),
-    );
-    specs.insert(
-        "echo",
-        CmdListItem::Spec(
-            CmdSpec::new(|conn, command| Box::pin(conn.handle_echo(command))).leading(1),
-        ),
-    );
-    specs.insert(
-        "get",
-        CmdListItem::Spec(
-            CmdSpec::new(|conn, command| Box::pin(conn.handle_get(command))).leading(1),
-        ),
-    );
-    specs.insert(
-        "set",
-        CmdListItem::Spec(
-            CmdSpec::new(|conn, command| Box::pin(conn.handle_set(command)))
-                .leading(2)
-                .named("px", 1),
-        ),
-    );
+    cmd!(specs, "ping", handle_ping);
+    cmd!(specs, "echo", handle_echo, leading(1));
+    cmd!(specs, "get", handle_get, leading(1));
+    cmd!(specs, "set", handle_set, leading(2), named("px", 1));
 
     return specs;
 }
@@ -131,7 +129,7 @@ impl<'db, Stream: AsyncReadRent + AsyncWriteRent> Connection<'db, Stream> {
         }
     }
 
-    async fn handle_ping(&mut self) -> anyhow::Result<()> {
+    async fn handle_ping(&mut self, _: ParsedArgs) -> anyhow::Result<()> {
         self.stream.write_simple_string("PONG").await?;
         Ok(())
     }
@@ -185,25 +183,30 @@ impl<'db, Stream: AsyncReadRent + AsyncWriteRent> Connection<'db, Stream> {
             let mut map = &self.specs;
             let found_spec: &CmdSpec<'db, Stream>;
             loop {
-                anyhow::ensure!(!command.is_empty(), "Unexpected end of command: {:?}", names);
+                anyhow::ensure!(
+                    !command.is_empty(),
+                    "Unexpected end of command: {:?}",
+                    names
+                );
 
                 let name = command.pop_front().unwrap().to_lowercase();
                 match map.get(name.as_str()) {
                     Some(CmdListItem::Spec(spec)) => {
                         found_spec = spec;
                         break;
-                    },
+                    }
                     Some(CmdListItem::SubSpecs(sub_cmds)) => {
                         names.push(name);
                         map = sub_cmds;
-                    },
+                    }
                     None => {
                         anyhow::bail!("Unknown command: {}", command[0]);
                     }
                 };
             }
 
-            let parsed_args = parse_args(found_spec.leading_argc, &found_spec.named_arg_argc, command)?;
+            let parsed_args =
+                parse_args(found_spec.leading_argc, &found_spec.named_arg_argc, command)?;
             let handler = found_spec.handler;
             handler(self, parsed_args).await?;
         }
