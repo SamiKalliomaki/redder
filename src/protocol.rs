@@ -5,7 +5,7 @@ use monoio::{io::{AsyncReadRent, AsyncWriteRent, AsyncWriteRentExt}, buf::IoBuf}
 
 #[derive(Debug)]
 pub(crate) enum RedisValue {
-    String(String),
+    String(BytesMut),
     Array(i64),
 }
 
@@ -14,13 +14,13 @@ pub(crate) trait RedisRead {
 }
 
 pub(crate) trait RedisReadExt {
-    async fn read_string(&mut self) -> io::Result<String>;
+    async fn read_string(&mut self) -> io::Result<BytesMut>;
     async fn read_array(&mut self) -> io::Result<i64>;
-    async fn read_string_array(&mut self) -> io::Result<Vec<String>>;
+    async fn read_string_array(&mut self) -> io::Result<Vec<BytesMut>>;
 }
 
 impl<T: RedisRead> RedisReadExt for T {
-    async fn read_string(&mut self) -> io::Result<String> {
+    async fn read_string(&mut self) -> io::Result<BytesMut> {
         let value = self.read_value().await?;
         match value {
             RedisValue::String(s) => Ok(s),
@@ -42,7 +42,7 @@ impl<T: RedisRead> RedisReadExt for T {
         }
     }
 
-    async fn read_string_array(&mut self) -> io::Result<Vec<String>> {
+    async fn read_string_array(&mut self) -> io::Result<Vec<BytesMut>> {
         let length = self.read_array().await?;
         if length < 0 {
             return Err(io::Error::new(
@@ -51,7 +51,7 @@ impl<T: RedisRead> RedisReadExt for T {
             ));
         }
 
-        let mut values: Vec<String> = Vec::with_capacity(length as usize);
+        let mut values: Vec<BytesMut> = Vec::with_capacity(length as usize);
         for _ in 0..length {
             values.push(self.read_string().await?);
         }
@@ -100,7 +100,7 @@ impl<Stream: AsyncReadRent> RedisBufStream<Stream> {
         Ok(self.buffer.get_u8())
     }
 
-    async fn read_line_bytes(&mut self) -> io::Result<BytesMut> {
+    async fn read_line(&mut self) -> io::Result<BytesMut> {
         let mut line = BytesMut::new();
         loop {
             match self.buffer.windows(2).position(|bytes| bytes == b"\r\n") {
@@ -117,15 +117,11 @@ impl<Stream: AsyncReadRent> RedisBufStream<Stream> {
         }
     }
 
-    async fn read_line(self: &mut Self) -> io::Result<String> {
-        let line = self.read_line_bytes().await?;
-        match String::from_utf8(line.into()) {
-            Ok(s) => Ok(s),
-            Err(_) => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Stream did not contain valid UTF-8",
-            )),
-        }
+    async fn parse_line(&mut self) -> io::Result<String> {
+        let line = self.read_line().await?;
+        Ok(String::from_utf8(line.to_vec()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 data")
+        })?)
     }
 
     async fn read_bytes(&mut self, len: usize) -> io::Result<BytesMut> {
@@ -136,7 +132,7 @@ impl<Stream: AsyncReadRent> RedisBufStream<Stream> {
         Ok(self.buffer.split_to(len))
     }
 
-    async fn parse_bulk_string(&mut self) -> io::Result<String> {
+    async fn parse_bulk_string(&mut self) -> io::Result<BytesMut> {
         let len: usize = self.parse_int().await?;
         let line = self.read_bytes(len).await?;
         if self.read_bytes(2).await?.as_ref() != b"\r\n" {
@@ -146,20 +142,14 @@ impl<Stream: AsyncReadRent> RedisBufStream<Stream> {
             ));
         }
 
-        match String::from_utf8(line.into()) {
-            Ok(s) => Ok(s),
-            Err(_) => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Stream did not contain valid UTF-8",
-            )),
-        }
+        Ok(line)
     }
 
     async fn parse_int<T>(&mut self) -> io::Result<T>
     where
         T: std::str::FromStr,
     {
-        let line = self.read_line().await?;
+        let line = self.parse_line().await?;
         line.parse::<T>().map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -192,7 +182,7 @@ pub(crate) trait RedisWrite {
     async fn write_simple_string<T: IoBuf + 'static>(&mut self, s: T) -> io::Result<()>;
     async fn write_bulk_string<T: IoBuf + 'static>(&mut self, s: T) -> io::Result<()>;
     async fn write_null_bulk_string(&mut self) -> io::Result<()>;
-    async fn write_bulk_string_opt(&mut self, s: Option<String>) -> io::Result<()>;
+    async fn write_bulk_string_opt<T: IoBuf + 'static>(&mut self, s: Option<T>) -> io::Result<()>;
     async fn write_array(&mut self, size: i64) -> io::Result<()>;
 }
 
@@ -224,9 +214,9 @@ impl<Stream: AsyncWriteRent> RedisWrite for RedisBufStream<Stream>
         Ok(())
     }
 
-    async fn write_bulk_string_opt(&mut self, s: Option<String>) -> io::Result<()> {
+    async fn write_bulk_string_opt<T: IoBuf + 'static>(&mut self, s: Option<T>) -> io::Result<()> {
         match s {
-            Some(s) => self.write_bulk_string(s.into_bytes()).await,
+            Some(s) => self.write_bulk_string(s).await,
             None => self.write_null_bulk_string().await,
         }
     }

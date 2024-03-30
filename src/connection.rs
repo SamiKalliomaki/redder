@@ -5,6 +5,8 @@ use std::{
     time::Duration,
 };
 
+use anyhow::Context;
+use bytes::BytesMut;
 use monoio::{
     io::{AsyncReadRent, AsyncWriteRent},
     time::Instant,
@@ -16,8 +18,8 @@ use crate::{
 };
 
 struct ParsedArgs {
-    args: Vec<String>,
-    named_args: HashMap<&'static str, Vec<String>>,
+    args: Vec<BytesMut>,
+    named_args: HashMap<&'static str, Vec<BytesMut>>,
 }
 
 type CmdResultFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + 'a>>;
@@ -84,7 +86,8 @@ fn create_command_specs<'db, Stream: AsyncReadRent + AsyncWriteRent>() -> CmdSpe
     cmd!(specs, "get", handle_get, leading(1));
     cmd!(specs, "set", handle_set, leading(2), named("px", 1));
 
-    { // Subcommand: config
+    {
+        // Subcommand: config
         let mut sub_specs: CmdSpecs<'db, Stream> = HashMap::new();
         cmd!(sub_specs, "get", handle_config_get, leading(1));
         specs.insert("config", CmdListItem::SubSpecs(sub_specs));
@@ -96,20 +99,23 @@ fn create_command_specs<'db, Stream: AsyncReadRent + AsyncWriteRent>() -> CmdSpe
 fn parse_args(
     leading_argc: usize,
     named_arg_argc: &HashMap<&'static str, usize>,
-    mut unparsed_args: VecDeque<String>,
+    mut unparsed_args: VecDeque<BytesMut>,
 ) -> anyhow::Result<ParsedArgs> {
     anyhow::ensure!(unparsed_args.len() >= leading_argc, "Not enough arguments");
 
-    let mut args = unparsed_args.drain(..leading_argc).collect::<Vec<String>>();
-    let mut named_args: HashMap<&'static str, Vec<String>> = HashMap::new();
+    let mut args = unparsed_args
+        .drain(..leading_argc)
+        .collect::<Vec<BytesMut>>();
+    let mut named_args: HashMap<&'static str, Vec<BytesMut>> = HashMap::new();
 
     while !unparsed_args.is_empty() {
-        let arg = unparsed_args.pop_front().unwrap().to_lowercase();
+        let arg = unparsed_args.pop_front().unwrap();
+        let lowercase = String::from_utf8_lossy(&arg).to_lowercase();
 
-        let named_arg = named_arg_argc.get_key_value(arg.as_str());
+        let named_arg = named_arg_argc.get_key_value(lowercase.as_str());
         if let Some((key, argc)) = named_arg {
             if *argc > unparsed_args.len() {
-                anyhow::bail!("Missing value for named argument: {}", arg);
+                anyhow::bail!("Missing value for named argument: {}", lowercase);
             }
             named_args.insert(key, unparsed_args.drain(..*argc).collect());
         } else {
@@ -141,9 +147,10 @@ impl<'db, Stream: AsyncReadRent + AsyncWriteRent> Connection<'db, Stream> {
     }
 
     async fn handle_echo(&mut self, command: ParsedArgs) -> anyhow::Result<()> {
-        self.stream
-            .write_bulk_string(command.args[0].clone().into_bytes())
-            .await?;
+        let mut args = command.args.into_iter();
+        let echo = args.next().unwrap();
+
+        self.stream.write_bulk_string(echo).await?;
         Ok(())
     }
 
@@ -162,13 +169,13 @@ impl<'db, Stream: AsyncReadRent + AsyncWriteRent> Connection<'db, Stream> {
 
         let expiry: Option<Instant>;
         if let Some(px) = command.named_args.get("px") {
-            let px = px[0].parse::<u64>()?;
+            let px = std::str::from_utf8(&px[0])?.parse::<u64>()?;
             expiry = Some(Instant::now() + Duration::from_millis(px));
         } else {
             expiry = None;
         }
 
-        self.db.set(key, value, expiry);
+        self.db.set(&key, &value, expiry);
         self.stream.write_simple_string("OK").await?;
         Ok(())
     }
@@ -179,8 +186,10 @@ impl<'db, Stream: AsyncReadRent + AsyncWriteRent> Connection<'db, Stream> {
 
         let value = self.db.get_config(&key);
         self.stream.write_array(2).await?;
-        self.stream.write_bulk_string(key.into_bytes()).await?;
-        self.stream.write_bulk_string_opt(value).await?;
+        self.stream.write_bulk_string(key).await?;
+        self.stream
+            .write_bulk_string_opt(value.map(|v| v.into_bytes()))
+            .await?;
         Ok(())
     }
 
@@ -199,18 +208,19 @@ impl<'db, Stream: AsyncReadRent + AsyncWriteRent> Connection<'db, Stream> {
                     names
                 );
 
-                let name = command.pop_front().unwrap().to_lowercase();
-                match map.get(name.as_str()) {
+                let arg = command.pop_front().unwrap();
+                let lowercase = String::from_utf8_lossy(&arg).to_lowercase();
+                match map.get(lowercase.as_str()) {
                     Some(CmdListItem::Spec(spec)) => {
                         found_spec = spec;
                         break;
                     }
                     Some(CmdListItem::SubSpecs(sub_cmds)) => {
-                        names.push(name);
+                        names.push(lowercase);
                         map = sub_cmds;
                     }
                     None => {
-                        anyhow::bail!("Unknown command: {}", command[0]);
+                        anyhow::bail!("Unknown command: {:?} -> {}", names, lowercase);
                     }
                 };
             }

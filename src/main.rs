@@ -45,10 +45,10 @@ async fn run() -> anyhow::Result<()> {
 
     let db = Arc::new(Database::new());
     if let Some(dir) = cli.dir {
-        db.set_config("dir".to_owned(), dir);
+        db.set_config(b"dir", dir);
     }
     if let Some(dbfilename) = cli.dbfilename {
-        db.set_config("dbfilename".to_owned(), dbfilename);
+        db.set_config(b"dbfilename", dbfilename);
     }
 
     let listener = TcpListener::bind("127.0.0.1:6379").context("Failed to bind")?;
